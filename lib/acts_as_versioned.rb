@@ -247,6 +247,11 @@ module ActiveRecord #:nodoc:
             page.version
           end
         end
+        
+        reflections.each do |name, reflection|
+          next if reflection.macro != :belongs_to || reflection.options[:polymorphic]
+           versioned_class.send(reflection.macro, *[name, reflection.options.merge({:readonly => true})])
+        end
 
         versioned_class.cattr_accessor :original_class
         versioned_class.original_class = self
@@ -277,6 +282,28 @@ module ActiveRecord #:nodoc:
             clone_versioned_model(self, rev)
             rev.send("#{self.class.version_column}=", send(self.class.version_column))
             rev.send("#{self.class.versioned_foreign_key}=", id)
+            
+            self.class.versioned_association_reflections.reject{|n, x| x.macro != :belongs_to}.each do |name, reflection|
+              if assoc = self.send(name)
+                next unless assoc.respond_to?(:current_version)
+                if reflection.options[:polymorphic]
+                  if assoc.current_version.nil? == false
+                    rev.send("#{self.class.versioned_association_foreign_key(reflection.foreign_key)}=", assoc.current_version.id)
+                    rev.send("#{self.class.versioned_association_foreign_key(reflection.foreign_type)}=", assoc.class.versioned_class.to_s)
+                  else
+                    rev.send("#{self.class.versioned_association_foreign_key(reflection.foreign_key)}=", nil)
+                    rev.send("#{self.class.versioned_association_foreign_key(reflection.foreign_type)}=", nil)
+                  end
+                else
+                  if assoc.current_version.nil? == false
+                    rev.send("#{self.class.versioned_association_foreign_key(reflection.foreign_key)}=", assoc.current_version.id)
+                  else
+                    rev.send("#{self.class.versioned_association_foreign_key(reflection.foreign_key)}=", nil)
+                  end
+                end
+              end
+            end
+            
             rev.save
           end
         end
@@ -418,6 +445,21 @@ module ActiveRecord #:nodoc:
           def versioned_class
             const_get versioned_class_name
           end
+          
+          # List reflections that are also versioned
+          def versioned_association_reflections
+            reflections.reject { |name, reflection| 
+              if reflection.options[:polymorphic] || (reflection.class_name == superclass.to_s && superclass != Object)
+                false
+              else
+                reflection.klass.respond_to?(:versioned_class) == false
+              end
+            }
+          end
+          
+          def versioned_association_foreign_key(existing_key)
+            "versioned_#{existing_key}"
+          end
 
           # Rake migration task to create the versioned table using options passed to acts_as_versioned
           def create_versioned_table(create_table_options = {})
@@ -449,8 +491,72 @@ module ActiveRecord #:nodoc:
                                          :scale     => type_col.scale,
                                          :precision => type_col.precision
             end
+            
+            # Add columns to store the versioned types
+            versioned_association_reflections.values.reject{|x| x.macro != :belongs_to}.each do |reflection|
+              if reflection.options[:polymorphic]
+                self.connection.add_column versioned_table_name, versioned_association_foreign_key(reflection.foreign_key), :integer
+                self.connection.add_column versioned_table_name, versioned_association_foreign_key(reflection.foreign_type), :string
+              else
+                self.connection.add_column versioned_table_name, versioned_association_foreign_key(reflection.foreign_key), :integer
+              end
+            end
 
             self.connection.add_index versioned_table_name, versioned_foreign_key
+          end
+          
+          # Rake migration task to match the versioned table.  Will add columns to the versioned table,
+          # but will not remove columns.  Any columns removed from the source but not the versioned 
+          # table will be noted in the console output.
+          def update_versioned_table(create_table_options = {})
+            
+            self.reset_column_information
+            self.versioned_class.reset_column_information
+            @versioned_columns = nil #A hackish re-set of versioned columns
+            
+            create_versioned_table(create_table_options) unless connection.table_exists?(versioned_table_name)
+            
+            #Add newly created columns
+            self.versioned_columns.each do |col| 
+              unless self.versioned_class.columns.detect{|c| c.name == col.name}
+                self.versioned_class.connection.add_column versioned_table_name, col.name, col.type, 
+                  :limit     => col.limit, 
+                  :default   => col.default,
+                  :scale     => col.scale,
+                  :precision => col.precision
+              end
+            end
+            
+            #I don't trust this enough to not clobber columns we need, so it puts out a list
+            self.versioned_class.columns.each do |col|
+              unless self.versioned_columns.detect{|c| c.name == col.name}
+                if !["id", version_column, versioned_foreign_key, version_column].include?(col.name) && !col.name.starts_with?("versioned_")
+                  puts "***  #{col.name} is in #{versioned_table_name} but no longer in the source table.  Perhaps you want a migration to remove it?"
+                  puts "***  remove_column :#{versioned_table_name}, :#{col.name}"
+                end
+              end
+            end
+            
+            
+            #Check the associated models
+            versioned_column_names = self.versioned_class.columns.collect{|c| c.name}
+            versioned_association_reflections.values.reject{|x| x.macro != :belongs_to}.each do |reflection|
+              if reflection.options[:polymorphic]
+                unless versioned_column_names.include?(versioned_association_foreign_key(reflection.foreign_key))
+                  self.connection.add_column versioned_table_name, versioned_association_foreign_key(reflection.foreign_key), :integer
+                end
+                unless versioned_column_names.include?(versioned_association_foreign_key(reflection.foreign_type))
+                  self.connection.add_column versioned_table_name, versioned_association_foreign_key(reflection.foreign_type), :string
+                end
+              else
+                cname = versioned_association_foreign_key(reflection.foreign_key)
+                unless versioned_column_names.include?(cname)
+                  self.connection.add_column versioned_table_name, cname, :integer
+                end
+              end
+            end
+
+            
           end
 
           # Rake migration task to drop the versioned table
