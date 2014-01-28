@@ -250,7 +250,7 @@ module ActiveRecord #:nodoc:
         
         reflections.each do |name, reflection|
           next if reflection.macro != :belongs_to || reflection.options[:polymorphic]
-           versioned_class.send(reflection.macro, *[name, reflection.options.merge({:readonly => true})])
+           versioned_class.send(reflection.macro, *[name, ->{reflection.scope ? reflection.scope.readonly : readonly}, reflection.options])
         end
 
         versioned_class.cattr_accessor :original_class
