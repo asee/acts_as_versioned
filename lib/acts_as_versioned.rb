@@ -164,25 +164,25 @@ module ActiveRecord #:nodoc:
         # don't allow multiple calls
         return if self.included_modules.include?(ActiveRecord::Acts::Versioned::Behaviors)
 
-        cattr_accessor :versioned_class_name, :versioned_foreign_key, :versioned_table_name, :versioned_inheritance_column,
-                       :version_column, :max_version_limit, :track_altered_attributes, :version_condition, :version_sequence_name, :non_versioned_columns,
-                       :version_association_options, :version_if_changed, :version_except_columns
+        cattr_accessor :versioned_class_name, :versioned_foreign_key, :versioned_table_name, :versioned_inheritance_column, 
+          :version_column, :max_version_limit, :track_altered_attributes, :version_condition, :version_sequence_name, :non_versioned_columns,
+          :version_association_options, :version_if_changed, :version_unless_changed
 
         self.versioned_class_name         = options[:class_name] || "Version"
-        self.versioned_foreign_key        = options[:foreign_key] || self.to_s.foreign_key
+        self.versioned_foreign_key        = options[:foreign_key] || self.base_class.to_s.foreign_key
         self.versioned_table_name         = options[:table_name] || "#{table_name_prefix}#{base_class.name.demodulize.underscore}_versions#{table_name_suffix}"
         self.versioned_inheritance_column = options[:inheritance_column] || "versioned_#{inheritance_column}"
         self.version_column               = options[:version_column] || 'version'
         self.version_sequence_name        = options[:sequence_name]
         self.max_version_limit            = options[:limit].to_i
         self.version_condition            = options[:if] || true
-        self.version_except_columns       = [options[:except]].flatten.map(&:to_s)  #these columns are kept in _versioned, but changing them does not excplitly cause a version change
-        self.non_versioned_columns        = [self.primary_key, inheritance_column, self.version_column, 'lock_version', versioned_inheritance_column] #these columns are excluded from _versions, and changing them does not cause a version change
+        self.non_versioned_columns        = [self.primary_key, inheritance_column, self.version_column, 'lock_version', versioned_inheritance_column] + options[:non_versioned_columns].to_a.map(&:to_s)
+        self.version_if_changed           = [] #This needs to be initialized, but is set below
+        self.version_unless_changed       = self.non_versioned_columns 
         self.version_association_options  = {
-                                                    :class_name  => "#{self.to_s}::#{versioned_class_name}",
-                                                    :foreign_key => versioned_foreign_key,
-                                                    :dependent   => :delete_all
-        }.merge(options[:association_options] || {})
+                                              :class_name  => "#{self.to_s}::#{versioned_class_name}",
+                                              :foreign_key => versioned_foreign_key
+                                            }.merge(options[:association_options] || {})
 
         if block_given?
           extension_module_name = "#{versioned_class_name}Extension"
@@ -246,6 +246,10 @@ module ActiveRecord #:nodoc:
           def versions_count
             page.version
           end
+          
+          def is_versioned_class?
+            true
+          end
         end
         
         reflections.each do |name, reflection|
@@ -260,7 +264,7 @@ module ActiveRecord #:nodoc:
                                    :class_name  => "::#{self.to_s}",
                                    :foreign_key => versioned_foreign_key
         versioned_class.send :include, options[:extend] if options[:extend].is_a?(Module)
-        versioned_class.set_sequence_name version_sequence_name if version_sequence_name
+        versioned_class.sequence_name= version_sequence_name if version_sequence_name
       end
 
       module Behaviors
@@ -272,6 +276,11 @@ module ActiveRecord #:nodoc:
           before_save :set_new_version
           after_save :save_version
           after_save :clear_old_versions
+          
+        end
+        
+        def versioned_associations
+          self.class.versioned_associations
         end
 
         # Saves a version of the model in the versioned table.  This is called in the after_save callback by default
@@ -307,6 +316,14 @@ module ActiveRecord #:nodoc:
             rev.save
           end
         end
+        
+        def current_version
+          fetch_version(version)
+        end
+        
+        def current_version?
+          current_version.version == version
+        end
 
         # Clears old revisions if a limit is set with the :limit option in <tt>acts_as_versioned</tt>.
         # Override this method to set your own criteria for clearing old versions.
@@ -328,6 +345,10 @@ module ActiveRecord #:nodoc:
           self.clone_versioned_model(version, self)
           send("#{self.class.version_column}=", version.send(self.class.version_column))
           true
+        end
+        
+        def fetch_version(version_to_fetch)
+          versions.where(self.class.version_column.to_sym => version_to_fetch).first
         end
 
         # Reverts a model to a given version and saves the model.
@@ -351,25 +372,27 @@ module ActiveRecord #:nodoc:
             end
           end
         end
-
+                
         def altered?
-          changed.map { |c| self.class.versioned_columns.map(&:name).include?(c) & !self.class.version_except_columns.include?(c) }.any?
+          if track_altered_attributes 
+            (version_if_changed & changed).any? 
+          else
+            (changed - version_unless_changed).any?
+          end
         end
+        
 
         # Clones a model.  Used when saving a new version or reverting a model's version.
         def clone_versioned_model(orig_model, new_model)
           self.class.versioned_columns.each do |col|
             next unless orig_model.has_attribute?(col.name)
-            define_method(new_model, col.name.to_sym)
             new_model.send("#{col.name.to_sym}=", orig_model.send(col.name))
           end
-
-          if orig_model.is_a?(self.class.versioned_class)
+          
+          if orig_model.is_a?(self.class.versioned_class) && new_model.has_attribute?(new_model.class.inheritance_column)
             new_model[new_model.class.inheritance_column] = orig_model[self.class.versioned_inheritance_column]
-          elsif new_model.is_a?(self.class.versioned_class)
-            sym = self.class.versioned_inheritance_column.to_sym
-            define_method new_model, sym
-            new_model.send("#{sym}=", orig_model[orig_model.class.inheritance_column]) if orig_model[orig_model.class.inheritance_column]
+          elsif new_model.is_a?(self.class.versioned_class) && new_model.has_attribute?(self.class.versioned_inheritance_column)
+            new_model[self.class.versioned_inheritance_column] = orig_model[orig_model.class.inheritance_column]
           end
         end
           
@@ -417,6 +440,69 @@ module ActiveRecord #:nodoc:
           self.class.without_locking(&block)
         end
 
+        # Accepts a column to pull the change history for and an options hash.
+        # The options has takes a :format option to select the output format, options include
+        # :raw, :objects, and :human.  Defaults to :human
+        def change_history_for(field, opts = {:format => :human})
+          opts.assert_valid_keys(:format)
+          field = field.to_s
+          changes = connection.select_all("            
+            select version, changed_field as 'to', previous as 'from', updated_at as 'when', updated_by as 'who'
+            FROM (
+              select 
+              @r := @r + (NOT @prev <=> changed_field) as `grouping`,
+              @prev as 'previous',
+              @prev := IF(@prev <=> changed_field, @prev, changed_field) ,
+              changed_field,
+              #{version_column} as `version`,
+              updated_at, updated_by
+            FROM  
+              (SELECT @prev := NULL, @current := NULL, @r := 0) vars,
+              ( select #{version_column}, #{field} as `changed_field`, updated_at, updated_by 
+                from #{versioned_table_name} 
+                WHERE #{versioned_foreign_key} = #{self.id} ORDER BY version asc) versions
+
+            ) q
+            GROUP BY grouping
+          ")
+          
+          if opts[:format] == :objects || opts[:format] == :human
+            # Object and Human formats get mixed in here since the objects are a precursor to the human formats
+            changes.each{|x| x["when"] = Time.zone.parse(x["when"]).localtime }
+            changes.each{|x| x["when"] = x["when"].to_s(:long)} if opts[:format] == :human
+            
+            if field.ends_with?("_id")
+              accessor = field.gsub("_id",'').to_sym
+              if (reflection = self.class.versioned_class.reflections[accessor]) && reflection.primary_key_name == field
+                changes.each_index do |i|
+                  ["from", "to"].each do |versioned_data|
+                    related_record = reflection.klass.find_by_id(changes[i][versioned_data])
+                    if related_record.present? 
+                      if opts[:format] == :human 
+                        if (accessor = [:name, :title, :code].detect{|display| related_record.respond_to?(display)})
+                          changes[i][versioned_data] = related_record.send(accessor)
+                        end
+                      else
+                        changes[i][versioned_data] = related_record
+                      end
+                    end          
+                  end
+                end
+              end
+            elsif field.ends_with?("_at")
+              ["from", "to"].each do |versioned_data|
+                changes.each{|x| x[versioned_data] = Time.zone.parse(x[versioned_data]).localtime if x[versioned_data].present?}
+                changes.each{|x| x[versioned_data] = x[versioned_data].to_s(:long) if x[versioned_data].present?} if opts[:format] == :human
+              end
+            end
+            
+          end
+          
+          changes
+
+        end
+        
+        
         def empty_callback()
         end
 
@@ -436,6 +522,8 @@ module ActiveRecord #:nodoc:
 
 
         module ClassMethods
+          
+          
           # Returns an array of columns that are versioned.  See non_versioned_columns
           def versioned_columns
             @versioned_columns ||= columns.select { |c| !non_versioned_columns.include?(c.name) }
@@ -444,6 +532,10 @@ module ActiveRecord #:nodoc:
           # Returns an instance of the dynamic versioned model
           def versioned_class
             const_get versioned_class_name
+          end
+          
+          def versioned_associations
+            versioned_association_reflections.keys
           end
           
           # List reflections that are also versioned
