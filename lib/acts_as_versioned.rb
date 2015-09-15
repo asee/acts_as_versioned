@@ -293,7 +293,7 @@ module ActiveRecord #:nodoc:
             rev.send("#{self.class.versioned_foreign_key}=", id)
             
             self.class.versioned_association_reflections.reject{|n, x| x.macro != :belongs_to}.each do |name, reflection|
-              if assoc = self.send(name)
+              if assoc = self.send(name.to_sym)
                 next unless assoc.respond_to?(:current_version)
                 if reflection.options[:polymorphic]
                   if assoc.current_version.nil? == false
@@ -473,7 +473,7 @@ module ActiveRecord #:nodoc:
             
             if field.ends_with?("_id")
               accessor = field.gsub("_id",'').to_sym
-              if (reflection = self.class.versioned_class.reflections[accessor]) && reflection.primary_key_name == field
+              if (reflection = self.class.versioned_class.reflect_on_association(accessor)) && reflection.association_foreign_key == field
                 changes.each_index do |i|
                   ["from", "to"].each do |versioned_data|
                     related_record = reflection.klass.find_by_id(changes[i][versioned_data])
@@ -535,7 +535,7 @@ module ActiveRecord #:nodoc:
           end
           
           def versioned_associations
-            versioned_association_reflections.keys
+            versioned_association_reflections.keys.collect(&:to_sym)
           end
           
           # List reflections that are also versioned
