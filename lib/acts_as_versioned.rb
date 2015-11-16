@@ -594,7 +594,7 @@ module ActiveRecord #:nodoc:
               end
             end
 
-            self.connection.add_index versioned_table_name, versioned_foreign_key
+            self.connection.add_index versioned_table_name, versioned_foreign_key, :name => "idx_#{versioned_table_name}_parent"
           end
           
           # Rake migration task to match the versioned table.  Will add columns to the versioned table,
