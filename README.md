@@ -54,6 +54,8 @@ Sometime you want to exclude an attribute of a model from being versioned. That 
       
     end
 
+Changes to `some_attr_i_dont_want_versioned` won't trigger an updated version
+
 
 #### Revisions ####
 
