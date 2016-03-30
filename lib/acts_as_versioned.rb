@@ -446,7 +446,7 @@ module ActiveRecord #:nodoc:
         def change_history_for(field, opts = {:format => :human})
           opts.assert_valid_keys(:format)
           field = field.to_s
-          changes = connection.select_all("            
+          changes = self.class.connection.select_all("
             select version, changed_field as 'to', previous as 'from', updated_at as 'when', updated_by as 'who'
             FROM (
               select 
