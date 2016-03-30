@@ -468,7 +468,7 @@ module ActiveRecord #:nodoc:
           
           if opts[:format] == :objects || opts[:format] == :human
             # Object and Human formats get mixed in here since the objects are a precursor to the human formats
-            changes.each{|x| x["when"] = Time.zone.parse(x["when"]).localtime }
+            changes.each{|x| x["when"] = Time.zone.parse(x["when"]).localtime if x["when"].kind_of?(String) }
             changes.each{|x| x["when"] = x["when"].to_s(:long)} if opts[:format] == :human
             
             if field.ends_with?("_id")
@@ -491,7 +491,7 @@ module ActiveRecord #:nodoc:
               end
             elsif field.ends_with?("_at")
               ["from", "to"].each do |versioned_data|
-                changes.each{|x| x[versioned_data] = Time.zone.parse(x[versioned_data]).localtime if x[versioned_data].present?}
+                changes.each{|x| x[versioned_data] = Time.zone.parse(x[versioned_data]).localtime if x[versioned_data].present? && x[versioned_data].kind_of?(String)}
                 changes.each{|x| x[versioned_data] = x[versioned_data].to_s(:long) if x[versioned_data].present?} if opts[:format] == :human
               end
             end
