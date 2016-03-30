@@ -474,7 +474,7 @@ module ActiveRecord #:nodoc:
             if field.ends_with?("_id")
               accessor = field.gsub("_id",'').to_sym
               if (reflection = self.class.versioned_class.reflect_on_association(accessor)) && reflection.association_foreign_key == field
-                changes.each_index do |i|
+                changes.to_ary.each_index do |i|
                   ["from", "to"].each do |versioned_data|
                     related_record = reflection.klass.find_by_id(changes[i][versioned_data])
                     if related_record.present? 
